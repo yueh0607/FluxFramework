@@ -4,19 +4,22 @@ using System.Collections.Generic;
 namespace FluxFramework.Example
 {
     /// <summary>
-    /// 敌人节点 - 使用系统架构
+    /// 敌人逻辑节点（纯逻辑，无视图）
+    /// 通过事件与视图层通信
     /// </summary>
-    public class EnemyNode : ViewNode, IAutoMovable, IDamageable
+    public class EnemyNode : Node, IAutoMovable, IDamageable, ICollidable
     {
-        public int CurrentHp { get; private set; }
+        // 逻辑数据
+        public Vector3 Position { get; set; }
+        public int CurrentHp { get; set; }
         public int MaxHp { get; private set; } = 100;
+        public Color OriginalColor => Color.red;
         
-        public float MoveSpeed = 2f;
-        public float MoveRange = 3f;
-        
-        private Vector3 _startPos;
-        private float _moveDirection = 1f;
-        private Renderer _renderer;
+        public float MoveSpeed { get; set; } = 2f;
+        public float MoveRange { get; set; } = 3f;
+        public float MoveDirection { get; set; } = 1f;
+        public Vector3 StartPosition { get; private set; }
+        public float CollisionRadius => 0.3f;
 
         public override void OnSpawn()
         {
@@ -29,66 +32,60 @@ namespace FluxFramework.Example
             
             // 监听死亡事件
             On<DeathEvent>(OnDeath);
+            
+            // 监听 Tick，发送同步事件
+            On<TickEventArgs>(OnTick);
         }
 
         public void Initialize(Vector3 startPosition)
         {
-            // 创建敌人外观
-            var go = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-            go.name = "Enemy";
-            _renderer = go.GetComponent<Renderer>();
-            _renderer.material.color = Color.red;
-            go.transform.localScale = new Vector3(0.5f, 0.5f, 0.5f);
-
+            Position = startPosition;
+            StartPosition = startPosition;
             MoveSpeed = Random.Range(1, 3f);
             
-            // 移除默认碰撞体
-            var collider = go.GetComponent<Collider>();
-            if (collider != null) Object.Destroy(collider);
-            
-            Bind(go);
-            Position = startPosition;
-            _startPos = startPosition;
+            // 通过 LogicRoot 发送创建事件到视图线程
+            var logicRoot = LogicRoot.GetLogicRoot(this);
+            logicRoot?.EmitToView(new NodeSpawnedEvent
+            {
+                NodeId = (int)Id,
+                NodeType = "Enemy",
+                Position = startPosition
+            });
         }
 
-        public void AutoMove(float deltaTime)
+        public override void OnDespawn()
         {
-            if (GameObject == null) return;
-
-            // 循环往复移动
-            var pos = Position;
-            pos.z += MoveSpeed * _moveDirection * deltaTime;
-
-            // 到达边界则反向
-            float minZ = _startPos.z - MoveRange;
-            float maxZ = _startPos.z + MoveRange;
+            // 通过 LogicRoot 发送销毁事件到视图线程
+            var logicRoot = LogicRoot.GetLogicRoot(this);
+            logicRoot?.EmitToView(new NodeDespawnedEvent
+            {
+                NodeId = (int)Id,
+                NodeType = "Enemy"
+            });
             
-            if (pos.z > maxZ)
-            {
-                pos.z = maxZ;
-                _moveDirection = -1f;
-            }
-            else if (pos.z < minZ)
-            {
-                pos.z = minZ;
-                _moveDirection = 1f;
-            }
-
-            Position = pos;
+            base.OnDespawn();
         }
 
-        public void TakeDamage(int damage)
+        private void OnTick(TickEventArgs e)
         {
-            CurrentHp -= damage;
+            if (OwnerThread == null) return;
             
-            // 闪烁效果
-            if (_renderer != null)
+            // 通过 LogicRoot 发送同步事件到视图线程
+            var logicRoot = LogicRoot.GetLogicRoot(this);
+            if (logicRoot != null)
             {
-                _renderer.material.color = Color.white;
-                DelayCall(0.1f, () => {
-                    if (_renderer != null)
-                        _renderer.material.color = Color.red;
-                });
+                logicRoot.EmitToView(new TransformSyncEvent
+                {
+                    Position = Position,
+                    Rotation = Quaternion.identity,
+                    Scale = Vector3.one
+                }, targetId: (int)Id);
+                
+                logicRoot.EmitToView(new HealthSyncEvent
+                {
+                    CurrentHp = CurrentHp,
+                    MaxHp = MaxHp
+                }, targetId: (int)Id);
             }
         }
 
@@ -99,17 +96,100 @@ namespace FluxFramework.Example
             Debug.Log("Enemy died! Respawning...");
             // 重置
             CurrentHp = MaxHp;
-            Position = _startPos;
+            Position = StartPosition;
         }
 
-        private void DelayCall(float delay, System.Action action)
+        public List<Node> GetCollisionTargets()
         {
+            // 敌人不需要主动检测碰撞，由子弹检测
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 敌人视图节点（纯视图，只负责渲染）
+    /// 通过定向事件接收逻辑数据
+    /// </summary>
+    public class EnemyViewNode : ViewNode
+    {
+        private int _logicNodeId;
+        private Renderer _renderer;
+        private Vector3 _targetPosition;
+        private Color _originalColor = Color.red;
+
+        public override void OnSpawn()
+        {
+            base.OnSpawn();
+        }
+
+        /// <summary>
+        /// 初始化视图，绑定逻辑节点ID
+        /// </summary>
+        public void Initialize(int logicNodeId, Vector3 position)
+        {
+            _logicNodeId = logicNodeId;
+            _targetPosition = position;
+            
+            // 订阅定向同步事件
+            On<TransformSyncEvent>(_logicNodeId, OnTransformSync);
+            On<HealthSyncEvent>(_logicNodeId, OnHealthSync);
+            
+            // 监听伤害事件（广播），用于播放特效
+            On<DamageEvent>(OnDamageEffect);
+            
+            // 创建外观
+            InitializeView(position);
+        }
+
+        private void InitializeView(Vector3 position)
+        {
+            // 创建敌人外观
+            var go = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            go.name = $"Enemy_{_logicNodeId}";
+            _renderer = go.GetComponent<Renderer>();
+            _renderer.material.color = _originalColor;
+            go.transform.localScale = new Vector3(0.5f, 0.5f, 0.5f);
+            go.transform.position = position;
+            
+            // 移除默认碰撞体
+            var collider = go.GetComponent<Collider>();
+            if (collider != null) Object.Destroy(collider);
+            
+            Bind(go);
+        }
+
+        private void OnTransformSync(TransformSyncEvent e)
+        {
+            _targetPosition = e.Position;
+            
             if (GameObject != null)
             {
+                GameObject.transform.position = _targetPosition;
+            }
+        }
+
+        private void OnHealthSync(HealthSyncEvent e)
+        {
+            // 可用于更新血条等UI
+        }
+
+        private void OnDamageEffect(DamageEvent e)
+        {
+            // 通过ID判断是否是自己的逻辑节点
+            if (e.Target is Node targetNode && (int)targetNode.Id != _logicNodeId) return;
+            
+            // 播放受击闪烁特效
+            if (_renderer != null && GameObject != null)
+            {
+                _renderer.material.color = Color.white;
+                
                 var helper = GameObject.GetComponent<DelayHelper>();
                 if (helper == null)
                     helper = GameObject.AddComponent<DelayHelper>();
-                helper.StartCoroutine(DelayCoroutine(delay, action));
+                helper.StartCoroutine(DelayCoroutine(0.1f, () => {
+                    if (_renderer != null)
+                        _renderer.material.color = _originalColor;
+                }));
             }
         }
 

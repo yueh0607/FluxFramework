@@ -26,14 +26,62 @@ namespace FluxFramework
         public static PoolContainerNode PoolContainer => FluxRoot?.PoolContainer;
 
         /// <summary>
-        /// 系统容器节点
-        /// </summary>
-        public static SystemContainerNode SystemContainer => FluxRoot?.SystemContainer;
-
-        /// <summary>
         /// 是否已初始化
         /// </summary>
         public static bool IsInitialized => FluxRoot != null;
+
+        private static bool _enableView = true;
+        
+        /// <summary>
+        /// 全局视图节点启用开关
+        /// 设置为 false 时：
+        /// 1. 所有新创建的 ViewNode 会被拦截，不会创建
+        /// 2. 所有已存在的 ViewNode 的 GameObject 会被隐藏
+        /// 适用于无头服务器、单元测试、性能测试等场景
+        /// </summary>
+        public static bool EnableView 
+        { 
+            get => _enableView;
+            set
+            {
+                if (_enableView != value)
+                {
+                    _enableView = value;
+                    // 切换时，更新所有已存在的 ViewNode
+                    if (IsInitialized)
+                    {
+                        UpdateAllViewNodesVisibility(value);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// 更新所有 ViewNode 的可见性
+        /// </summary>
+        private static void UpdateAllViewNodesVisibility(bool visible)
+        {
+            if (FluxRoot == null) return;
+            UpdateNodeViewVisibility(FluxRoot, visible);
+        }
+
+        /// <summary>
+        /// 递归更新节点及其子节点的视图可见性
+        /// </summary>
+        private static void UpdateNodeViewVisibility(Node node, bool visible)
+        {
+            // 如果是 ViewNode，更新其 GameObject 可见性
+            if (node is ViewNode viewNode && viewNode.GameObject != null)
+            {
+                viewNode.GameObject.SetActive(visible);
+            }
+
+            // 递归处理子节点
+            foreach (var child in node.Children)
+            {
+                UpdateNodeViewVisibility(child, visible);
+            }
+        }
 
         #endregion
 

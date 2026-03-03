@@ -40,10 +40,17 @@ namespace FluxFramework
         #region 事件注册表（深度分桶 + 链表）
 
         /// <summary>
-        /// 事件类型 -> 深度桶数组，每个桶是一个链表
+        /// 事件类型 -> 深度桶数组，每个桶是一个链表（广播事件）
         /// </summary>
         private readonly Dictionary<Type, List<LinkedList<EventSubscriber>>> _eventRegistry 
             = new Dictionary<Type, List<LinkedList<EventSubscriber>>>();
+
+        /// <summary>
+        /// 定向事件注册表：事件类型 -> (目标ID -> 订阅者链表)
+        /// 用于支持按ID定向发送事件
+        /// </summary>
+        private readonly Dictionary<Type, Dictionary<int, LinkedList<EventSubscriber>>> _targetedEventRegistry
+            = new Dictionary<Type, Dictionary<int, LinkedList<EventSubscriber>>>();
 
         /// <summary>
         /// 复用的 Tick 事件参数（struct，零 GC）
@@ -204,16 +211,76 @@ namespace FluxFramework
             {
                 try
                 {
-                    var target = NodePool.FindById(msg.TargetId);
-                    if (target != null && target.OwnerThread == this)
+                    // 检查是否是事件消息
+                    if (msg is EventMessage eventMsg)
                     {
-                        target.OnMessage(msg);
+                        // 自动在当前线程分发事件
+                        eventMsg.DispatchOn(this);
+                    }
+                    else
+                    {
+                        // 普通消息
+                        var target = NodePool.FindById(msg.TargetId);
+                        if (target != null && target.OwnerThread == this)
+                        {
+                            target.OnMessage(msg);
+                        }
                     }
                 }
                 finally
                 {
                     MessagePool.Despawn(msg);
                 }
+            }
+        }
+
+        #endregion
+
+        #region 跨线程事件
+
+        /// <summary>
+        /// 跨线程发送广播事件
+        /// 使用方式：logicThread.EmitTo(viewThread, new NodeSpawnedEvent {...});
+        /// </summary>
+        public void EmitTo<T>(ThreadNode targetThread, T args)
+        {
+            if (targetThread == null) return;
+
+            if (targetThread == this)
+            {
+                // 同线程，直接 Emit
+                Emit(args);
+            }
+            else
+            {
+                // 跨线程，包装成消息投递到目标邮箱
+                var msg = MessagePool.Spawn<EventMessage<T>>();
+                msg.EventData = args;
+                msg.TargetNodeId = null;  // 广播
+                targetThread.InBox.Post(msg);
+            }
+        }
+
+        /// <summary>
+        /// 跨线程发送定向事件
+        /// 使用方式：logicThread.EmitTo(viewThread, new TransformSyncEvent {...}, targetId);
+        /// </summary>
+        public void EmitTo<T>(ThreadNode targetThread, T args, int targetId)
+        {
+            if (targetThread == null) return;
+
+            if (targetThread == this)
+            {
+                // 同线程，直接 Emit
+                Emit(args, targetId);
+            }
+            else
+            {
+                // 跨线程，包装成消息投递到目标邮箱
+                var msg = MessagePool.Spawn<EventMessage<T>>();
+                msg.EventData = args;
+                msg.TargetNodeId = targetId;  // 定向
+                targetThread.InBox.Post(msg);
             }
         }
 
@@ -306,6 +373,77 @@ namespace FluxFramework
         }
 
         /// <summary>
+        /// 注册定向事件 - O(1)
+        /// 只接收指定 targetId 的事件
+        /// </summary>
+        internal EventHandle RegisterTargeted<T>(int targetId, Node node, Action<T> handler)
+        {
+            var type = typeof(T);
+
+            if (!_targetedEventRegistry.TryGetValue(type, out var idMap))
+            {
+                idMap = new Dictionary<int, LinkedList<EventSubscriber>>();
+                _targetedEventRegistry[type] = idMap;
+            }
+
+            if (!idMap.TryGetValue(targetId, out var list))
+            {
+                list = new LinkedList<EventSubscriber>();
+                idMap[targetId] = list;
+            }
+
+            var subscriber = new EventSubscriber
+            {
+                Node = node,
+                Handler = handler
+            };
+            var listNode = list.AddLast(subscriber);
+
+            return new EventHandle
+            {
+                ListNode = listNode,
+                List = list
+            };
+        }
+
+        /// <summary>
+        /// 定向发送事件 - O(1) 查找 + O(K) 分发，K=该ID的订阅者数
+        /// 只触发订阅了指定 targetId 的处理器
+        /// </summary>
+        public void Emit<T>(T args, int targetId)
+        {
+            var type = typeof(T);
+
+            if (!_targetedEventRegistry.TryGetValue(type, out var idMap))
+                return;
+
+            if (!idMap.TryGetValue(targetId, out var list))
+                return;
+
+            var current = list.First;
+            while (current != null)
+            {
+                var next = current.Next;
+                var sub = current.Value;
+
+                try
+                {
+                    ((Action<T>)sub.Handler)(args);
+                }
+                catch (Exception ex)
+                {
+                    UnityEngine.Debug.LogException(ex);
+                }
+
+                // 检查 Handled
+                if (CheckHandled(args))
+                    return;
+
+                current = next;
+            }
+        }
+
+        /// <summary>
         /// 检查事件是否已被处理（支持 struct 和 class）
         /// </summary>
         private bool CheckHandled<T>(T args)
@@ -345,6 +483,7 @@ namespace FluxFramework
         /// </summary>
         private void ClearEventRegistry()
         {
+            // 清空广播事件
             foreach (var buckets in _eventRegistry.Values)
             {
                 foreach (var list in buckets)
@@ -354,6 +493,17 @@ namespace FluxFramework
                 buckets.Clear();
             }
             _eventRegistry.Clear();
+
+            // 清空定向事件
+            foreach (var idMap in _targetedEventRegistry.Values)
+            {
+                foreach (var list in idMap.Values)
+                {
+                    list?.Clear();
+                }
+                idMap.Clear();
+            }
+            _targetedEventRegistry.Clear();
         }
 
         #endregion

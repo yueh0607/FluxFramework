@@ -19,7 +19,8 @@ namespace FluxFramework.Example
 
             if (node is IDamageable damageable)
             {
-                damageable.TakeDamage(e.Damage);
+                // 逻辑在System里：直接扣血
+                damageable.CurrentHp -= e.Damage;
                 Debug.Log($"{node.GetType().Name} took {e.Damage} damage! HP: {damageable.CurrentHp}/{damageable.MaxHp}");
 
                 if (damageable.CurrentHp <= 0)
@@ -48,13 +49,13 @@ namespace FluxFramework.Example
     }
 
     /// <summary>
-    /// 可受伤接口
+    /// 可受伤接口 - 纯数据，无逻辑
     /// </summary>
     public interface IDamageable
     {
-        int CurrentHp { get; }
+        int CurrentHp { get; set; }
         int MaxHp { get; }
-        void TakeDamage(int damage);
+        Color OriginalColor { get; }
     }
 
     /// <summary>

@@ -13,6 +13,9 @@ namespace FluxFramework
     /// │   └── TypePoolNode&lt;T2&gt; [池内节点...]
     /// └── UserRoot (用户根节点)
     ///     └── (用户业务节点树...)
+    /// 
+    /// 注意：系统容器 (SystemContainerNode) 不再由 FluxRoot 管理，
+    /// 而是由各个 ThreadNode 的业务层创建（如 LogicSystemRoot、ViewSystemRoot）
     /// </remarks>
     public class FluxRoot : Node
     {
@@ -31,11 +34,6 @@ namespace FluxFramework
         /// 对象池容器节点
         /// </summary>
         public PoolContainerNode PoolContainer { get; private set; }
-
-        /// <summary>
-        /// 系统容器节点
-        /// </summary>
-        public SystemContainerNode SystemContainer { get; private set; }
 
         /// <summary>
         /// 用户根节点（业务节点从这里开始）
@@ -67,14 +65,10 @@ namespace FluxFramework
             Instance.PoolContainer = new PoolContainerNode();
             Instance.AddSpecialChild(Instance.PoolContainer);
 
-            // 3. 创建系统容器节点（直接 new，不走池）
-            Instance.SystemContainer = new SystemContainerNode();
-            Instance.AddSpecialChild(Instance.SystemContainer);
-
-            // 4. 设置 NodePool 的引用
+            // 3. 设置 NodePool 的引用
             NodePool.SetPoolContainer(Instance.PoolContainer);
 
-            // 5. 创建用户根节点（通过池创建，这样可以被正常管理）
+            // 4. 创建用户根节点（通过池创建，这样可以被正常管理）
             Instance.UserRoot = NodePool.Spawn<Node>();
             Instance.AddChildInternal(Instance.UserRoot);
         }
@@ -122,10 +116,7 @@ namespace FluxFramework
             Instance.PoolContainer?.ClearAll();
             Instance.PoolContainer = null;
 
-            // 3. 清空系统容器
-            Instance.SystemContainer = null;
-
-            // 4. 清理引用
+            // 3. 清理引用
             NodePool.SetPoolContainer(null);
             Instance = null;
         }

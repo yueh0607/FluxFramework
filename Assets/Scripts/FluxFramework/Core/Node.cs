@@ -123,6 +123,12 @@ namespace FluxFramework
         /// </summary>
         public T AddChild<T>() where T : Node, new()
         {
+            // 如果视图禁用且T是ViewNode，则不创建
+            if (!Tree.EnableView && typeof(ViewNode).IsAssignableFrom(typeof(T)))
+            {
+                return null;
+            }
+
             var child = NodePool.SpawnWithoutInit<T>();
             AddChildInternal(child);
             // OnSpawn 在 OwnerThread 设置后调用，这样用户可以在 OnSpawn 中订阅事件
@@ -254,7 +260,7 @@ namespace FluxFramework
         #region 事件订阅
 
         /// <summary>
-        /// 订阅事件（泛型，零 GC）
+        /// 订阅广播事件（泛型，零 GC）
         /// 返回句柄，用于 O(1) 取消
         /// 句柄会自动存入 _eventHandles，OnDespawn 时自动清理
         /// </summary>
@@ -266,6 +272,24 @@ namespace FluxFramework
             }
 
             var handle = OwnerThread.Register(this, handler);
+            _eventHandles.Add(handle);
+            return handle;
+        }
+
+        /// <summary>
+        /// 订阅定向事件（只接收指定 targetId 的事件）
+        /// 用于视图节点订阅特定逻辑节点的同步事件
+        /// </summary>
+        /// <param name="targetId">目标ID，只接收该ID发送的事件</param>
+        /// <param name="handler">事件处理器</param>
+        public EventHandle On<T>(int targetId, Action<T> handler)
+        {
+            if (OwnerThread == null)
+            {
+                throw new InvalidOperationException($"Node {Id} has no OwnerThread, cannot subscribe events");
+            }
+
+            var handle = OwnerThread.RegisterTargeted(targetId, this, handler);
             _eventHandles.Add(handle);
             return handle;
         }
@@ -524,10 +548,17 @@ namespace FluxFramework
             if (_attachedSystems == null)
                 _attachedSystems = new List<NodeSystem>();
 
-            var container = Tree.FluxRoot?.SystemContainer;
+            if (OwnerThread == null)
+            {
+                UnityEngine.Debug.LogError($"Node {Id} has no OwnerThread, cannot attach system");
+                return;
+            }
+
+            // 从 OwnerThread 查找 SystemContainerNode
+            var container = OwnerThread.FindChild<SystemContainerNode>();
             if (container == null)
             {
-                UnityEngine.Debug.LogError("SystemContainer not initialized");
+                UnityEngine.Debug.LogError($"No SystemContainerNode found in OwnerThread (ID={OwnerThread.Id})");
                 return;
             }
 

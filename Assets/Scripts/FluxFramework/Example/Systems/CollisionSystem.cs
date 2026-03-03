@@ -15,7 +15,7 @@ namespace FluxFramework.Example
 
         private void CheckCollisions(Node node)
         {
-            if (node is ICollidable collidable)
+            if (node is ICollidable collidable && node is BulletNode bulletNode)
             {
                 // 查找潜在的碰撞目标
                 var targets = collidable.GetCollisionTargets();
@@ -23,9 +23,9 @@ namespace FluxFramework.Example
 
                 foreach (var target in targets)
                 {
-                    if (target is ICollidable otherCollidable)
+                    if (target is ICollidable otherCollidable && target is EnemyNode enemyNode)
                     {
-                        float dist = Vector3.Distance(collidable.Position, otherCollidable.Position);
+                        float dist = Vector3.Distance(bulletNode.Position, enemyNode.Position);
                         if (dist < collidable.CollisionRadius + otherCollidable.CollisionRadius)
                         {
                             // 发出碰撞事件
@@ -47,7 +47,7 @@ namespace FluxFramework.Example
     /// </summary>
     public interface ICollidable
     {
-        Vector3 Position { get; }
+        Vector3 Position { get; }  // 逻辑位置
         float CollisionRadius { get; }
         List<Node> GetCollisionTargets();
     }

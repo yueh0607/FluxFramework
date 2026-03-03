@@ -4,11 +4,17 @@ using UnityEngine;
 namespace FluxFramework.Example
 {
     /// <summary>
-    /// 敌人管理器节点
-    /// 作为节点树的一部分，管理所有敌人
+    /// 敌人管理器节点（纯逻辑）
+    /// 管理所有敌人的生成和销毁
+    /// 视图通过事件自动同步
     /// </summary>
-    public class EnemyManagerNode : ViewNode
+    public class EnemyManagerNode : Node
     {
+        public override void OnSpawn()
+        {
+            base.OnSpawn();
+        }
+
         /// <summary>
         /// 生成敌人
         /// </summary>
@@ -42,12 +48,6 @@ namespace FluxFramework.Example
         {
             if (enemy == null) return;
             RemoveAndDespawnChild(enemy);
-        }
-
-        public override void OnSpawn()
-        {
-            base.OnSpawn();
-            CreateEmpty("EnemyManager");
         }
     }
 }

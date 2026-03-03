@@ -3,17 +3,30 @@ using UnityEngine;
 namespace FluxFramework.Example
 {
     /// <summary>
-    /// 游戏启动器
-    /// 展示树框架的射击游戏示例
+    /// 游戏启动器 - 双线程架构
+    /// 
+    /// 架构：
+    /// - LogicThread: 独立线程，30fps，运行游戏逻辑
+    /// - ViewThread: 主线程，Unity 帧率，渲染视图
+    /// - 通过 MailBox + EventMessage 跨线程通信
     /// </summary>
     public class GameBoot : MonoBehaviour
     {
         [Header("游戏设置")]
         [SerializeField] private int _enemyCount = 3;
         [SerializeField] private float _enemySpacing = 3f;
+        [SerializeField] private bool _useMultiThread = true;  // 是否启用多线程
+        [SerializeField] private int _logicFrameRate = 30;
 
-        private ThreadNode _mainThread;
-        private GameRootNode _gameRoot;
+        // 双线程
+        private ThreadNode _logicThread;
+        private ThreadNode _viewThread;
+        
+        // 业务根节点
+        private LogicRoot _logicRoot;
+        private ViewRoot _viewRoot;
+        
+        // 逻辑节点
         private PlayerNode _player;
         private BulletManagerNode _bulletManager;
         private EnemyManagerNode _enemyManager;
@@ -26,22 +39,29 @@ namespace FluxFramework.Example
 
         void Update()
         {
-            // 驱动主线程
-            Tree.Tick(_mainThread, Time.deltaTime);
+            if (_useMultiThread)
+            {
+                // 多线程模式：只驱动视图线程（逻辑线程自己运行）
+                Tree.Tick(_viewThread, Time.deltaTime);
+            }
+            else
+            {
+                // 单线程模式：手动驱动两个线程
+                Tree.Tick(_logicThread, Time.deltaTime);
+                Tree.Tick(_viewThread, Time.deltaTime);
+            }
 
-            // 按 T 打印树结构
+            // 调试按键
             if (Input.GetKeyDown(KeyCode.T))
             {
                 PrintTreeStructure(false);
             }
 
-            // 按 P 打印完整树结构（包含对象池）
             if (Input.GetKeyDown(KeyCode.P))
             {
                 PrintTreeStructure(true);
             }
 
-            // 按 R 重启游戏
             if (Input.GetKeyDown(KeyCode.R))
             {
                 RestartGame();
@@ -50,42 +70,88 @@ namespace FluxFramework.Example
 
         void OnDestroy()
         {
+            if (_useMultiThread && _logicThread != null)
+            {
+                _logicThread.Stop();
+            }
             Tree.Shutdown();
         }
 
         /// <summary>
-        /// 初始化树结构
+        /// 初始化双线程树结构
+        /// 
+        /// FluxRoot
+        /// ├── LogicThread (独立线程, 30fps)
+        /// │   ├── LogicSystemRoot (SystemContainerNode)
+        /// │   │   ├── MoveSystem
+        /// │   │   ├── ShootSystem
+        /// │   │   ├── CollisionSystem
+        /// │   │   └── HealthSystem
+        /// │   └── LogicRoot (业务逻辑)
+        /// │       ├── PlayerNode
+        /// │       ├── BulletManagerNode
+        /// │       └── EnemyManagerNode
+        /// │
+        /// └── ViewThread (主线程, Unity帧率)
+        ///     ├── ViewSystemRoot (SystemContainerNode)
+        ///     │   └── InputSystem
+        ///     └── ViewRoot (业务视图)
+        ///         ├── PlayerViewNode
+        ///         ├── EnemyViewNode
+        ///         └── BulletViewNode
         /// </summary>
         private void InitializeTree()
         {
-            // 1. 初始化全局树（会创建 FluxRoot -> SystemContainer + PoolContainer + UserRoot）
+            // 1. 初始化全局树
             Tree.Initialize();
 
-            // 2. 注册全局系统
-            RegisterSystems();
+            // 2. 创建逻辑线程
+            _logicThread = Tree.Root.AddChild<ThreadNode>();
+            _logicThread.Configure("LogicThread", runOnDedicatedThread: _useMultiThread);
+            _logicThread.SetTargetFrameRate(_logicFrameRate);
 
-            // 3. 在 UserRoot 下创建主线程节点（外部驱动模式）
-            _mainThread = Tree.Root.AddChild<ThreadNode>();
-            _mainThread.Configure("MainThread", runOnDedicatedThread: false);
+            // 3. 创建逻辑系统根节点（自动注册逻辑系统）
+            var logicSystemRoot = _logicThread.AddChild<LogicSystemRoot>();
 
-            // 4. 创建游戏根节点
-            _gameRoot = _mainThread.AddChild<GameRootNode>();
+            // 4. 创建视图线程
+            _viewThread = Tree.Root.AddChild<ThreadNode>();
+            _viewThread.Configure("ViewThread", runOnDedicatedThread: false);
 
-            // 5. 创建子弹管理器节点
-            _bulletManager = _gameRoot.AddChild<BulletManagerNode>();
+            // 5. 创建视图系统根节点（自动注册视图系统）
+            var viewSystemRoot = _viewThread.AddChild<ViewSystemRoot>();
+            viewSystemRoot.ConfigureSystems(_logicThread);  // 配置 InputSystem 的逻辑线程引用
 
-            // 6. 创建敌人管理器节点
-            _enemyManager = _gameRoot.AddChild<EnemyManagerNode>();
+            // 6. 创建视图分支（先创建，以便监听逻辑事件）
+            _viewRoot = _viewThread.AddChild<ViewRoot>();
+            _viewRoot.Initialize(_logicThread);
 
-            // 7. 创建玩家
-            _player = _gameRoot.AddChild<PlayerNode>();
-            _player.Initialize();
+            // 7. 创建逻辑分支
+            _logicRoot = _logicThread.AddChild<LogicRoot>();
+            _logicRoot.Initialize(_viewThread);
 
-            // 8. 创建敌人
+            // 8. 创建游戏逻辑节点
+            _bulletManager = _logicRoot.AddChild<BulletManagerNode>();
+            _enemyManager = _logicRoot.AddChild<EnemyManagerNode>();
+            
+            _player = _logicRoot.AddChild<PlayerNode>();
+            _player.Initialize(new Vector3(-3, 0, 0));
+
+            // 9. 创建敌人
             for (int i = 0; i < _enemyCount; i++)
             {
                 var pos = new Vector3(3 + i * _enemySpacing, 0, 0);
                 _enemyManager.SpawnEnemy(pos);
+            }
+
+            // 10. 启动逻辑线程（如果是多线程模式）
+            if (_useMultiThread)
+            {
+                _logicThread.Start();
+                Debug.Log($"=== Multi-Thread Mode: Logic={_logicFrameRate}fps, View=Unity ===");
+            }
+            else
+            {
+                Debug.Log("=== Single-Thread Mode ===");
             }
 
             Debug.Log("=== Game Initialized ===");
@@ -94,20 +160,6 @@ namespace FluxFramework.Example
             Debug.Log("Press R to restart");
             
             PrintTreeStructure();
-        }
-
-        /// <summary>
-        /// 注册全局系统
-        /// </summary>
-        private void RegisterSystems()
-        {
-            Tree.SystemContainer.RegisterSystem<InputSystem>();
-            Tree.SystemContainer.RegisterSystem<MoveSystem>();
-            Tree.SystemContainer.RegisterSystem<ShootSystem>();
-            Tree.SystemContainer.RegisterSystem<CollisionSystem>();
-            Tree.SystemContainer.RegisterSystem<HealthSystem>();
-            
-            Debug.Log("=== Systems Registered ===");
         }
 
         /// <summary>
@@ -130,6 +182,10 @@ namespace FluxFramework.Example
         /// </summary>
         private void RestartGame()
         {
+            if (_useMultiThread && _logicThread != null)
+            {
+                _logicThread.Stop();
+            }
             Tree.Shutdown();
             InitializeTree();
         }
@@ -152,10 +208,18 @@ namespace FluxFramework.Example
                 fontSize = 14
             };
 
-            GUILayout.BeginArea(new Rect(10, 10, 300, 250));
+            GUILayout.BeginArea(new Rect(10, 10, 350, 320));
             
             GUILayout.Label($"Active Nodes: {NodePool.ActiveCount}", style);
             GUILayout.Label($"Pooled Nodes: {NodePool.TotalPooledCount}", style);
+            GUILayout.Space(10);
+            GUILayout.Label("=== Architecture ===", style);
+            GUILayout.Label($"Mode: {(_useMultiThread ? "Multi-Thread" : "Single-Thread")}", style);
+            if (_useMultiThread)
+            {
+                GUILayout.Label($"Logic: {_logicFrameRate}fps (独立线程)", style);
+                GUILayout.Label($"View: Unity帧率 (主线程)", style);
+            }
             GUILayout.Space(10);
             GUILayout.Label("=== Controls ===", style);
             GUILayout.Label("WASD - Move", style);

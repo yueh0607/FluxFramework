@@ -91,6 +91,20 @@ namespace FluxFramework.Editor
 
             _includePool = GUILayout.Toggle(_includePool, "Pool", EditorStyles.toolbarButton, GUILayout.Width(40));
 
+            GUILayout.Space(10);
+
+            // EnableView 开关
+            if (Application.isPlaying)
+            {
+                bool enableView = Tree.EnableView;
+                bool newEnableView = GUILayout.Toggle(enableView, "View", EditorStyles.toolbarButton, GUILayout.Width(50));
+                if (newEnableView != enableView)
+                {
+                    Tree.EnableView = newEnableView;
+                    Debug.Log($"[TreeViewer] EnableView set to: {newEnableView}");
+                }
+            }
+
             GUILayout.FlexibleSpace();
 
             if (GUILayout.Button("Copy", EditorStyles.toolbarButton, GUILayout.Width(50)))

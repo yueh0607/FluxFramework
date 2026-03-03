@@ -3,15 +3,15 @@ using UnityEngine;
 namespace FluxFramework.Example
 {
     /// <summary>
-    /// 子弹管理器节点
-    /// 作为节点树的一部分，管理所有子弹的生成和销毁
+    /// 子弹管理器节点（纯逻辑）
+    /// 管理所有子弹的生成和销毁
+    /// 视图通过事件自动同步
     /// </summary>
-    public class BulletManagerNode : ViewNode
+    public class BulletManagerNode : Node
     {
         public override void OnSpawn()
         {
             base.OnSpawn();
-            CreateEmpty("BulletManager");
             
             // 监听生成子弹事件
             On<SpawnBulletEvent>(OnSpawnBullet);
